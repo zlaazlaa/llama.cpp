@@ -12696,7 +12696,7 @@ static void ggml_threadpool_resume_locked(struct ggml_threadpool * threadpool) {
 // }
 
 static thread_ret_t ggml_graph_compute_thread(void * data) {
-    bool enable_htp_profile = getenv("HTP_PROFILE") != NULL;
+    bool enable_htp_profile = (getenv("HTP_PROFILE") != NULL) && (atoi(getenv("HTP_PROFILE")) != 0);
 
     struct ggml_compute_state * state = (struct ggml_compute_state *) data;
     struct ggml_threadpool    * tp    = state->threadpool;

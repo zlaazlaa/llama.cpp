@@ -25,6 +25,7 @@ struct RpcMemMapper {
         defer_unmap{ defer_unmap_ops } {}
 
     void                    validate(const struct ggml_tensor * dst);
+    void free_buffer(void * ptr);
     std::pair<int, ssize_t> get_tensor_mapping(const struct ggml_tensor *) const;  // returns <mapping fd, offset>
 
     using UnmapRequest = std::tuple<int, void *, size_t>;

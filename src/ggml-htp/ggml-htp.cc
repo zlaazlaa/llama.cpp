@@ -125,6 +125,11 @@ static void ggml_backend_htp_buffer_free_buffer(ggml_backend_buffer_t buffer) {
     //   leaving rpcmem to be handled uniformly when the process exits.
 
     // rpcmem_free(buffer->context);
+    if (buffer->context) {
+        auto * ctx = ggml_backend_htp_context::instance();
+        ctx->mapper.free_buffer(buffer->context);
+        rpcmem_free(buffer->context);
+    }
 }
 
 static void ggml_backend_htp_buffer_memset_tensor(ggml_backend_buffer_t buffer, struct ggml_tensor * tensor,
