@@ -12748,18 +12748,43 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
 
         int64_t elapsed_time = ggml_time_us() - t1;
         if (enable_htp_profile && state->ith == 0) {
-            fprintf(stderr, "node %s, op %s, shape (%ld, %ld, %ld, %ld), %ld us", node->name, ggml_op_name(node->op), node->ne[0], node->ne[1], node->ne[2], node->ne[3], elapsed_time);
-            if (htp_ops_support_op(node)) {
-                fprintf(stderr, " on NPU\n");
-                npu_us += elapsed_time;
-            } else {
-                fprintf(stderr, " on CPU (dst %s, src0 %s, src1 %s)\n",
-                    ggml_type_name(node->type),
-                    ggml_type_name(node->src[0]->type),
-                    node->src[1] ? ggml_type_name(node->src[1]->type) : "--"
-                );
-                cpu_us += elapsed_time;
+            // Helper macro: a "model param" name contains '.' (e.g. model.diffusion_model.xxx.weight)
+            #define IS_MODEL_PARAM(name) ((name)[0] != '\0' && strchr((name), '.') != NULL)
+
+            // Check if any src is a model param
+            int has_model_param = 0;
+            for (int si = 0; si < GGML_MAX_SRC; ++si) {
+                if (node->src[si] && IS_MODEL_PARAM(node->src[si]->name)) {
+                    has_model_param = 1;
+                    break;
+                }
             }
+
+            if (htp_ops_support_op(node)) {
+                npu_us += elapsed_time;
+                if (has_model_param) {
+                    fprintf(stderr, "node %s, op %s, shape (%ld, %ld, %ld, %ld), %ld us on NPU", node->name, ggml_op_name(node->op), node->ne[0], node->ne[1], node->ne[2], node->ne[3], elapsed_time);
+                    for (int si = 0; si < GGML_MAX_SRC; ++si) {
+                        if (node->src[si] && IS_MODEL_PARAM(node->src[si]->name)) {
+                            fprintf(stderr, ", src%d: %s(%s)", si, node->src[si]->name, ggml_type_name(node->src[si]->type));
+                        }
+                    }
+                    fprintf(stderr, "\n");
+                }
+            } else {
+                cpu_us += elapsed_time;
+                if (has_model_param) {
+                    fprintf(stderr, "node %s, op %s, shape (%ld, %ld, %ld, %ld), %ld us on CPU", node->name, ggml_op_name(node->op), node->ne[0], node->ne[1], node->ne[2], node->ne[3], elapsed_time);
+                    for (int si = 0; si < GGML_MAX_SRC; ++si) {
+                        if (node->src[si] && IS_MODEL_PARAM(node->src[si]->name)) {
+                            fprintf(stderr, ", src%d: %s(%s)", si, node->src[si]->name, ggml_type_name(node->src[si]->type));
+                        }
+                    }
+                    fprintf(stderr, "\n");
+                }
+            }
+
+            #undef IS_MODEL_PARAM
 
             // float *d = (float *)node->data;
             // fprintf(stderr, "    sampled: %f %f %f %f ...\n", d[0], d[1], d[2], d[3]);

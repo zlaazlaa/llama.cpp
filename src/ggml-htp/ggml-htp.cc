@@ -14,7 +14,8 @@
 #include "ggml-htp-impl.h"
 
 // real backend initialization work is done here. ggml_backend_htp_init is only a wrapper
-ggml_backend_htp_context::ggml_backend_htp_context() : mapper(3 * 1024UL * 1024 * 1024, true) {
+// FIXME: The 1.5GB memory limit is hardcoded. This needs to be a device-specific parameter to prevent allocation failures or suboptimal performance on different hardware.
+ggml_backend_htp_context::ggml_backend_htp_context() : mapper(1.5 * 1024UL * 1024 * 1024, true) {
     fprintf(stderr, "Initializing HTP backend... (You should see this once)\n");
 
     // rpcmem_init & rpcmem_deinit are actually not required on modern Hexagon processors
