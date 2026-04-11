@@ -12,6 +12,7 @@
 #include "ggml-backend.h"
 #include "ggml-cpu.h"
 #include "ggml-htp-impl.h"
+#include "htp-ops.h"
 
 // real backend initialization work is done here. ggml_backend_htp_init is only a wrapper
 // FIXME: The 1.5GB memory limit is hardcoded. This needs to be a device-specific parameter to prevent allocation failures or suboptimal performance on different hardware.
@@ -382,8 +383,7 @@ static ggml_backend_buffer_type_t ggml_backend_htp_device_get_buffer_type(ggml_b
 }
 
 static bool ggml_backend_htp_device_supports_op(ggml_backend_dev_t dev, const struct ggml_tensor * op) {
-    auto * cpu_dev = ggml_backend_reg_dev_get(ggml_backend_cpu_reg(), 0);
-    return ggml_backend_dev_supports_op(cpu_dev, op);
+    return htp_ops_support_op(op);
 
     GGML_UNUSED(dev);
 }
@@ -395,8 +395,7 @@ static bool ggml_backend_htp_device_supports_buft(ggml_backend_dev_t dev, ggml_b
 }
 
 static bool ggml_backend_htp_device_offload_op(ggml_backend_dev_t dev, const struct ggml_tensor * op) {
-    auto * cpu_dev = ggml_backend_reg_dev_get(ggml_backend_cpu_reg(), 0);
-    return ggml_backend_dev_supports_op(cpu_dev, op);
+    return htp_ops_support_op(op);
 
     GGML_UNUSED(dev);
 }
@@ -413,7 +412,7 @@ static const struct ggml_backend_device_i ggml_backend_htp_device_i = {
     /* .buffer_from_host_ptr = */ nullptr,
     /* .supports_op          = */ ggml_backend_htp_device_supports_op,
     /* .supports_buft        = */ ggml_backend_htp_device_supports_buft,
-    /* .offload_op           = */ nullptr,
+    /* .offload_op           = */ ggml_backend_htp_device_offload_op,
     /* .event_new            = */ nullptr,
     /* .event_free           = */ nullptr,
     /* .event_synchronize    = */ nullptr,

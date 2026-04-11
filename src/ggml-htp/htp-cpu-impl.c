@@ -10569,6 +10569,10 @@ static void ggml_compute_forward_flash_attn_ext(
     }
 }
 
+void ggml_htp_compute_flash_attn_ext_cpu(struct ggml_compute_params * params, struct ggml_tensor * dst) {
+    ggml_compute_forward_flash_attn_ext(params, dst->src[0], dst->src[1], dst->src[2], dst->src[3], dst);
+}
+
 // ggml_compute_forward_flash_attn_back
 
 static void ggml_compute_forward_flash_attn_back_f32(

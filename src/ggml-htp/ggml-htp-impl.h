@@ -42,4 +42,5 @@ struct ggml_backend_htp_context {
 extern "C" {
 
 enum ggml_status ggml_graph_compute_htp_hybrid(struct ggml_cgraph * cgraph, struct ggml_cplan * cplan);
+void ggml_htp_compute_flash_attn_ext_cpu(struct ggml_compute_params * params, struct ggml_tensor * dst);
 }

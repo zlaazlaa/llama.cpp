@@ -4,7 +4,11 @@
 #include <unistd.h>
 
 #include <atomic>
+#include <cmath>
+#include <cstdlib>
 #include <cstring>
+#include <limits>
+#include <string>
 #include <vector>
 
 #include "ggml-backend-impl.h"
@@ -45,6 +49,156 @@ void write_buf(uint8_t *& p, void * src, size_t size) {
 }
 
 uint8_t param_buf[4096];  // TODO(hzx): better implementation
+
+bool get_env_flag(const char * name) {
+    const char * env = getenv(name);
+    return env != nullptr && atoi(env) != 0;
+}
+
+int get_env_int(const char * name, int default_value) {
+    const char * env = getenv(name);
+    return env != nullptr ? atoi(env) : default_value;
+}
+
+void dump_blob(const char * path, const void * data, size_t size) {
+    FILE * fp = fopen(path, "wb");
+    if (fp == nullptr) {
+        fprintf(stderr, "HTP flash_attn dump: failed to open %s\n", path);
+        return;
+    }
+    fwrite(data, 1, size, fp);
+    fclose(fp);
+}
+
+void maybe_dump_flash_attn_case(int op_index, const ggml_tensor * dst, const void * ref_data) {
+    if (op_index != 0 || !get_env_flag("HTP_FLASH_ATTN_DUMP")) {
+        return;
+    }
+
+    const char * dump_dir = getenv("HTP_FLASH_ATTN_DUMP_DIR");
+    if (dump_dir == nullptr || dump_dir[0] == '\0') {
+        dump_dir = "/data/local/tmp";
+    }
+
+    auto make_path = [&](const char * suffix) {
+        return std::string(dump_dir) + "/htp_flash_attn_" + suffix;
+    };
+
+    auto * q = dst->src[0];
+    auto * k = dst->src[1];
+    auto * v = dst->src[2];
+
+    dump_blob(make_path("q.bin").c_str(), q->data, ggml_nbytes(q));
+    dump_blob(make_path("k.bin").c_str(), k->data, ggml_nbytes(k));
+    dump_blob(make_path("v.bin").c_str(), v->data, ggml_nbytes(v));
+    dump_blob(make_path("out_dsp.bin").c_str(), dst->data, ggml_nbytes(dst));
+    dump_blob(make_path("out_ref.bin").c_str(), ref_data, ggml_nbytes(dst));
+
+    std::string meta_path = make_path("meta.txt");
+    FILE * fp = fopen(meta_path.c_str(), "w");
+    if (fp == nullptr) {
+        fprintf(stderr, "HTP flash_attn dump: failed to open %s\n", meta_path.c_str());
+        return;
+    }
+
+    auto write_tensor_meta = [&](const char * name, const ggml_tensor * t) {
+        fprintf(fp,
+                "%s ne=%lld,%lld,%lld,%lld nb=%zu,%zu,%zu,%zu type=%d nbytes=%zu\n",
+                name,
+                (long long) t->ne[0], (long long) t->ne[1], (long long) t->ne[2], (long long) t->ne[3],
+                t->nb[0], t->nb[1], t->nb[2], t->nb[3],
+                (int) t->type, ggml_nbytes(t));
+    };
+
+    write_tensor_meta("q", q);
+    write_tensor_meta("k", k);
+    write_tensor_meta("v", v);
+    write_tensor_meta("dst", dst);
+    fclose(fp);
+}
+
+void maybe_compare_flash_attn_with_cpu_ref(struct ggml_compute_params * params, struct ggml_tensor * dst) {
+    if (dst->op != GGML_OP_FLASH_ATTN_EXT || !get_env_flag("HTP_FLASH_ATTN_COMPARE")) {
+        return;
+    }
+
+    static std::atomic<int> flash_attn_op_index{0};
+    const int op_index = flash_attn_op_index.fetch_add(1, std::memory_order_relaxed);
+    const int limit    = get_env_int("HTP_FLASH_ATTN_COMPARE_LIMIT", std::numeric_limits<int>::max());
+    if (op_index >= limit) {
+        return;
+    }
+
+    void * ref_data = nullptr;
+    if (posix_memalign(&ref_data, 64, ggml_nbytes(dst)) != 0 || ref_data == nullptr) {
+        fprintf(stderr, "HTP flash_attn compare[%d]: ref allocation failed\n", op_index);
+        return;
+    }
+    memset(ref_data, 0, ggml_nbytes(dst));
+
+    struct ggml_tensor dst_ref = *dst;
+    dst_ref.data               = ref_data;
+
+    struct ggml_compute_params params_ref = *params;
+    params_ref.ith = 0;
+    params_ref.nth = 1;
+
+    ggml_htp_compute_flash_attn_ext_cpu(&params_ref, &dst_ref);
+    maybe_dump_flash_attn_case(op_index, dst, ref_data);
+
+    const float * got = static_cast<const float *>(dst->data);
+    const float * ref = static_cast<const float *>(ref_data);
+    const size_t n    = ggml_nelements(dst);
+
+    double mse = 0.0;
+    float  max_abs = 0.0f;
+    size_t max_idx = 0;
+    for (size_t i = 0; i < n; ++i) {
+        const float diff = got[i] - ref[i];
+        mse += (double) diff * (double) diff;
+        const float abs_diff = fabsf(diff);
+        if (abs_diff > max_abs) {
+            max_abs = abs_diff;
+            max_idx = i;
+        }
+    }
+    const float rmse = n == 0 ? 0.0f : sqrtf((float) (mse / (double) n));
+
+    auto * q = dst->src[0];
+    auto * k = dst->src[1];
+    auto * v = dst->src[2];
+
+    fprintf(stderr,
+            "HTP flash_attn compare[%d]: "
+            "q.ne=[%lld,%lld,%lld,%lld] q.nb=[%zu,%zu,%zu,%zu] "
+            "k.ne=[%lld,%lld,%lld,%lld] k.nb=[%zu,%zu,%zu,%zu] "
+            "v.ne=[%lld,%lld,%lld,%lld] v.nb=[%zu,%zu,%zu,%zu] "
+            "dst.ne=[%lld,%lld,%lld,%lld] dst.nb=[%zu,%zu,%zu,%zu] "
+            "rmse=%g max_abs=%g max_idx=%zu\n",
+            op_index,
+            (long long) q->ne[0], (long long) q->ne[1], (long long) q->ne[2], (long long) q->ne[3],
+            q->nb[0], q->nb[1], q->nb[2], q->nb[3],
+            (long long) k->ne[0], (long long) k->ne[1], (long long) k->ne[2], (long long) k->ne[3],
+            k->nb[0], k->nb[1], k->nb[2], k->nb[3],
+            (long long) v->ne[0], (long long) v->ne[1], (long long) v->ne[2], (long long) v->ne[3],
+            v->nb[0], v->nb[1], v->nb[2], v->nb[3],
+            (long long) dst->ne[0], (long long) dst->ne[1], (long long) dst->ne[2], (long long) dst->ne[3],
+            dst->nb[0], dst->nb[1], dst->nb[2], dst->nb[3],
+            rmse, max_abs, max_idx);
+
+    if (max_abs > 1e-3f) {
+        int printed = 0;
+        for (size_t i = 0; i < n && printed < 8; ++i) {
+            const float diff = got[i] - ref[i];
+            if (fabsf(diff) > 1e-3f) {
+                fprintf(stderr, "  idx=%zu got=%g ref=%g diff=%g\n", i, got[i], ref[i], diff);
+                ++printed;
+            }
+        }
+    }
+
+    free(ref_data);
+}
 
 }  // namespace
 
@@ -137,6 +291,15 @@ bool htp_ops_support_op(const struct ggml_tensor * dst) {
 }
 
 int htp_ops_compute_op(struct ggml_compute_params * params, struct ggml_tensor * dst) {
+    const bool force_cpu_flash_attn =
+        dst->op == GGML_OP_FLASH_ATTN_EXT &&
+        get_env_flag("HTP_FLASH_ATTN_CPU_REF");
+
+    if (force_cpu_flash_attn) {
+        ggml_htp_compute_flash_attn_ext_cpu(params, dst);
+        return 0;
+    }
+
     if (params->ith != 0) {
         return 0;
     }
@@ -390,6 +553,10 @@ int htp_ops_compute_op(struct ggml_compute_params * params, struct ggml_tensor *
     }
 
     std::atomic_thread_fence(std::memory_order_acquire);
-    return message_header_get_request_ptr(msg_hdr, 0)->state;
+    const int ret = message_header_get_request_ptr(msg_hdr, 0)->state;
+    if (ret == 0) {
+        maybe_compare_flash_attn_with_cpu_ref(params, dst);
+    }
+    return ret;
 }
 }
