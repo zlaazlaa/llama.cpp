@@ -2,6 +2,8 @@
 
 #include <dlfcn.h>
 
+#include <cstdio>
+
 #include "ggml.h"
 
 using rpcmem_init_t   = decltype(rpcmem_init);
@@ -16,11 +18,33 @@ using fastrpc_munmap_t = decltype(fastrpc_munmap);
 namespace {
 
 void * load_lib() {
-    auto * lib = dlopen("libcdsprpc.so", RTLD_LAZY | RTLD_LOCAL);
-    if (!lib) {
-        GGML_ABORT("unable to load libcdsprpc.so");
+    static const char * candidates[] = {
+        "libcdsprpc.so",
+        "/data/local/tmp/libcdsprpc.so",
+        "/vendor/lib64/libcdsprpc.so",
+        "/system/lib64/libcdsprpc.so",
+    };
+
+    const char * last_error = nullptr;
+    for (const char * candidate : candidates) {
+        dlerror();
+        auto * lib = dlopen(candidate, RTLD_LAZY | RTLD_LOCAL);
+        if (lib) {
+            if (candidate != candidates[0]) {
+                fprintf(stderr, "ggml-htp: loaded dsprpc runtime from %s\n", candidate);
+            }
+            return lib;
+        }
+
+        last_error = dlerror();
+        if (last_error) {
+            fprintf(stderr, "ggml-htp: dlopen(%s) failed: %s\n", candidate, last_error);
+        } else {
+            fprintf(stderr, "ggml-htp: dlopen(%s) failed with unknown error\n", candidate);
+        }
     }
-    return lib;
+
+    GGML_ABORT("%s", last_error ? last_error : "unable to load libcdsprpc.so");
 }
 
 void * load_fn(const char * fn_name) {
